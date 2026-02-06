@@ -1,0 +1,150 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../lib/grafana_log_analyzer'
+require 'optparse'
+require 'yaml'
+
+options = {}
+hours = GrafanaLogAnalyzer::Analyzer::DEFAULT_HOURS
+mode = 'full'
+format = 'compact'
+config = {}
+
+OptionParser.new do |opts|
+  opts.banner = <<~BANNER
+    grafana-log-analyzer v#{GrafanaLogAnalyzer::VERSION}
+    Analyze Grafana/Loki logs to find root causes of failures.
+
+    Usage: grafana-log-analyzer [options]
+
+    Modes: #{GrafanaLogAnalyzer::Analyzer::VALID_MODES.join(', ')}
+  BANNER
+
+  opts.separator ''
+  opts.separator 'Identifiers (at least one required):'
+
+  opts.on('--subscription-uuid UUID', 'Subscription UUID') do |v|
+    options[:subscription_uuid] = v
+  end
+
+  opts.on('--account-uuid UUID', 'Account UUID') do |v|
+    options[:account_uuid] = v
+  end
+
+  opts.on('--msisdn MSISDN', 'Phone number (MSISDN)') do |v|
+    options[:msisdn] = v
+  end
+
+  opts.on('--iccid ICCID', 'SIM card identifier (ICCID)') do |v|
+    options[:iccid] = v
+  end
+
+  opts.on('--imei IMEI', 'Device identifier (IMEI)') do |v|
+    options[:imei] = v
+  end
+
+  opts.separator ''
+  opts.separator 'Options:'
+
+  opts.on('--hours N', Integer,
+          "Time range in hours (default: #{GrafanaLogAnalyzer::Analyzer::DEFAULT_HOURS})") do |v|
+    hours = v
+  end
+
+  opts.on('--mode MODE', GrafanaLogAnalyzer::Analyzer::VALID_MODES,
+          "Analysis mode (#{GrafanaLogAnalyzer::Analyzer::VALID_MODES.join(', ')}). Default: full") do |v|
+    mode = v
+  end
+
+  opts.on('--format FORMAT', GrafanaLogAnalyzer::Analyzer::VALID_FORMATS,
+          "Output format (#{GrafanaLogAnalyzer::Analyzer::VALID_FORMATS.join(', ')}). Default: compact") do |v|
+    format = v
+  end
+
+  opts.separator ''
+  opts.separator 'Configuration:'
+
+  opts.on('--grafana-url URL', 'Grafana base URL') do |v|
+    config[:grafana_url] = v
+  end
+
+  opts.on('--env ENV', 'Environment name (e.g. qa, dev200, production)') do |v|
+    config[:env] = v
+  end
+
+  opts.on('--env-suffix SUFFIX', 'Env label suffix (e.g. -mse → {env="qa-mse"})') do |v|
+    config[:env_suffix] = v
+  end
+
+  opts.on('--credentials FILE', 'YAML credentials file path') do |v|
+    creds = YAML.load_file(v)
+    config[:grafana_url] ||= creds['grafana_url']
+    config[:grafana_user] = creds['user'] || creds['api_user']
+    config[:grafana_password] = creds['password'] || creds['api_password']
+  end
+
+  opts.on('-h', '--help', 'Show this help message') do
+    puts opts
+    exit
+  end
+
+  opts.on('--version', 'Show version') do
+    puts "grafana-log-analyzer v#{GrafanaLogAnalyzer::VERSION}"
+    exit
+  end
+
+  opts.on('--install-skills [DIR]', 'Install AI agent skill files to a directory') do |v|
+    install_dir = v || '.windsurf/skills/grafana-log-analysis'
+    source_dir = File.expand_path('../../skills/grafana-log-analysis', __FILE__)
+
+    require 'fileutils'
+    FileUtils.mkdir_p(install_dir)
+    FileUtils.cp_r("#{source_dir}/.", install_dir)
+    puts "Installed skill files to #{install_dir}/"
+    puts "Files:"
+    Dir.glob("#{install_dir}/**/*").select { |f| File.file?(f) }.each do |f|
+      puts "  #{f}"
+    end
+    exit
+  end
+end.parse!
+
+if options.empty?
+  puts 'Error: At least one identifier is required'
+  puts 'Use --help for usage information'
+  exit 1
+end
+
+# Auto-load credentials from common locations if not provided
+unless config[:grafana_user]
+  %w[grafana_api_token.yml .grafana_credentials.yml].each do |cred_file|
+    path = File.join(Dir.pwd, cred_file)
+    next unless File.exist?(path)
+
+    creds = YAML.load_file(path)
+    config[:grafana_user] ||= creds['user'] || creds['api_user']
+    config[:grafana_password] ||= creds['password'] || creds['api_password']
+    config[:grafana_url] ||= creds['grafana_url']
+    break
+  end
+end
+
+begin
+  analyzer = GrafanaLogAnalyzer::Analyzer.new(options, hours: hours, mode: mode, config: config)
+  analyzer.analyze
+
+  puts "\n"
+  if format == 'json'
+    puts analyzer.to_json
+  else
+    puts analyzer.to_compact
+  end
+rescue GrafanaLogAnalyzer::ConfigError => e
+  $stderr.puts "Configuration error: #{e.message}"
+  $stderr.puts 'Use --credentials FILE or set GRAFANA_URL, GRAFANA_USER, GRAFANA_PASSWORD env vars'
+  exit 1
+rescue GrafanaLogAnalyzer::APIError => e
+  $stderr.puts "API error: #{e.message}"
+  exit 1
+end

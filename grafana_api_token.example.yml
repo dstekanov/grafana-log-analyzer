@@ -1,0 +1,9 @@
+# Example Grafana credentials file
+# Copy this to grafana_api_token.yml and fill in your values.
+#
+# The tool auto-detects grafana_api_token.yml or .grafana_credentials.yml
+# in the current directory. Or pass explicitly with --credentials FILE.
+
+grafana_url: "https://your-grafana-instance.grafana.net"
+user: "your_user_id"
+password: "your_api_token_or_password"
